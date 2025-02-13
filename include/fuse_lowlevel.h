@@ -199,6 +199,9 @@ enum fuse_notify_entry_flags {
  * interrupted, and the reply discarded.  For example if
  * fuse_reply_open() return -ENOENT means, that the release method for
  * this file will not be called.
+ *
+ * This data structure is ABI sensitive, on adding new functions these need to
+ * be appended at the end of the struct
  */
 struct fuse_lowlevel_ops {
 	/**
@@ -300,7 +303,7 @@ struct fuse_lowlevel_ops {
 	 *
 	 * @param req request handle
 	 * @param ino the inode number
-	 * @param fi for future use, currently always NULL
+	 * @param fi file information, or NULL
 	 */
 	void (*getattr) (fuse_req_t req, fuse_ino_t ino,
 			 struct fuse_file_info *fi);
@@ -509,7 +512,7 @@ struct fuse_lowlevel_ops {
 	 *    expected to properly handle the O_APPEND flag and ensure
 	 *    that each write is appending to the end of the file.
 	 * 
-         *  - When writeback caching is enabled, the kernel will
+	 *  - When writeback caching is enabled, the kernel will
 	 *    handle O_APPEND. However, unless all changes to the file
 	 *    come through the kernel this will not work reliably. The
 	 *    filesystem should thus either ignore the O_APPEND flag
@@ -744,7 +747,7 @@ struct fuse_lowlevel_ops {
 	 * Returning a directory entry from readdir() does not affect
 	 * its lookup count.
 	 *
-         * If off_t is non-zero, then it will correspond to one of the off_t
+	 * If off_t is non-zero, then it will correspond to one of the off_t
 	 * values that was previously returned by readdir() for the same
 	 * directory handle. In this case, readdir() should skip over entries
 	 * coming before the position defined by the off_t value. If entries
@@ -1299,6 +1302,29 @@ struct fuse_lowlevel_ops {
 	 */
 	void (*lseek) (fuse_req_t req, fuse_ino_t ino, off_t off, int whence,
 		       struct fuse_file_info *fi);
+
+
+	/**
+	 * Create a tempfile
+	 * 
+	 * Tempfile means an anonymous file. It can be made into a normal file later
+	 * by using linkat or such.
+	 * 
+	 * If this is answered with an error ENOSYS this is treated by the kernel as 
+	 * a permanent failure and it will disable the feature and not ask again.
+	 *
+	 * Valid replies:
+	 *   fuse_reply_create
+	 *   fuse_reply_err
+	 *
+	 * @param req request handle
+	 * @param parent inode number of the parent directory
+	 * @param mode file type and mode with which to create the new file
+	 * @param fi file information
+	 */
+	void (*tmpfile) (fuse_req_t req, fuse_ino_t parent,
+			mode_t mode, struct fuse_file_info *fi);
+
 };
 
 /**
@@ -1355,7 +1381,8 @@ int fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param *e);
  * Reply with a directory entry and open parameters
  *
  * currently the following members of 'fi' are used:
- *   fh, direct_io, keep_cache
+ *   fh, direct_io, keep_cache, cache_readdir, nonseekable, noflush,
+ *   parallel_direct_writes
  *
  * Possible requests:
  *   create
@@ -1414,7 +1441,8 @@ int fuse_passthrough_close(fuse_req_t req, int backing_id);
  * Reply with open parameters
  *
  * currently the following members of 'fi' are used:
- *   fh, direct_io, keep_cache
+ *   fh, direct_io, keep_cache, cache_readdir, nonseekable, noflush,
+ *   parallel_direct_writes,
  *
  * Possible requests:
  *   open, opendir
@@ -2019,36 +2047,6 @@ int fuse_parse_cmdline_312(struct fuse_args *args,
 #endif
 #endif
 
-/*
- * This should mostly not be called directly, but instead the fuse_session_new()
- * macro should be used, which fills in the libfuse version compilation
- * is done against automatically.
- */
-struct fuse_session *_fuse_session_new_317(struct fuse_args *args,
-					  const struct fuse_lowlevel_ops *op,
-					  size_t op_size,
-					  struct libfuse_version *version,
-					  void *userdata);
-
-/* Do not call this directly, but only through fuse_session_new() */
-#if (defined(LIBFUSE_BUILT_WITH_VERSIONED_SYMBOLS))
-struct fuse_session *
-_fuse_session_new(struct fuse_args *args,
-		 const struct fuse_lowlevel_ops *op,
-		 size_t op_size,
-		 struct libfuse_version *version,
-		 void *userdata);
-#else
-struct fuse_session *
-_fuse_session_new_317(struct fuse_args *args,
-		      const struct fuse_lowlevel_ops *op,
-		      size_t op_size,
-		      struct libfuse_version *version,
-		      void *userdata);
-#define _fuse_session_new(args, op, op_size, version, userdata)	\
-	_fuse_session_new_317(args, op, op_size, version, userdata)
-#endif
-
 /**
  * Create a low level session.
  *
@@ -2078,10 +2076,8 @@ _fuse_session_new_317(struct fuse_args *args,
  * @return the fuse session on success, NULL on failure
  **/
 static inline struct fuse_session *
-fuse_session_new(struct fuse_args *args,
-		 const struct fuse_lowlevel_ops *op,
-		 size_t op_size,
-		 void *userdata)
+fuse_session_new_fn(struct fuse_args *args, const struct fuse_lowlevel_ops *op,
+		    size_t op_size, void *userdata)
 {
 	struct libfuse_version version = {
 		.major = FUSE_MAJOR_VERSION,
@@ -2090,8 +2086,17 @@ fuse_session_new(struct fuse_args *args,
 		.padding = 0
 	};
 
-	return _fuse_session_new(args, op, op_size, &version, userdata);
+	/* not declared globally, to restrict usage of this function */
+	struct fuse_session *fuse_session_new_versioned(
+		struct fuse_args *args, const struct fuse_lowlevel_ops *op,
+		size_t op_size, struct libfuse_version *version,
+		void *userdata);
+
+	return fuse_session_new_versioned(args, op, op_size, &version,
+					  userdata);
 }
+#define fuse_session_new(args, op, op_size, userdata) \
+	fuse_session_new_fn(args, op, op_size, userdata)
 
 /*
  * This should mostly not be called directly, but instead the

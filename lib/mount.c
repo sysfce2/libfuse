@@ -41,12 +41,14 @@
 #define MS_NOEXEC	MNT_NOEXEC
 #define MS_SYNCHRONOUS	MNT_SYNCHRONOUS
 #define MS_NOATIME	MNT_NOATIME
+#define MS_NOSYMFOLLOW	MNT_NOSYMFOLLOW
 
 #define umount2(mnt, flags) unmount(mnt, (flags == 2) ? MNT_FORCE : 0)
 #endif
 
 #define FUSERMOUNT_PROG		"fusermount3"
 #define FUSE_COMMFD_ENV		"_FUSE_COMMFD"
+#define FUSE_COMMFD2_ENV	"_FUSE_COMMFD2"
 
 #ifndef MS_DIRSYNC
 #define MS_DIRSYNC 128
@@ -114,6 +116,8 @@ static const struct fuse_opt fuse_mount_opts[] = {
 	FUSE_OPT_KEY("noatime",			KEY_KERN_FLAG),
 	FUSE_OPT_KEY("nodiratime",		KEY_KERN_FLAG),
 	FUSE_OPT_KEY("nostrictatime",		KEY_KERN_FLAG),
+	FUSE_OPT_KEY("symfollow",		KEY_KERN_FLAG),
+	FUSE_OPT_KEY("nosymfollow",		KEY_KERN_FLAG),
 	FUSE_OPT_END
 };
 
@@ -185,6 +189,8 @@ static const struct mount_flags mount_flags[] = {
 	{"nodiratime",	    MS_NODIRATIME,	1},
 	{"norelatime",	    MS_RELATIME,	0},
 	{"nostrictatime",   MS_STRICTATIME,	0},
+	{"symfollow",	    MS_NOSYMFOLLOW,	0},
+	{"nosymfollow",	    MS_NOSYMFOLLOW,	1},
 #ifndef __NetBSD__
 	{"dirsync", MS_DIRSYNC,	    1},
 #endif
@@ -362,6 +368,14 @@ static int setup_auto_unmount(const char *mountpoint, int quiet)
 	char arg_fd_entry[30];
 	snprintf(arg_fd_entry, sizeof(arg_fd_entry), "%i", fds[0]);
 	setenv(FUSE_COMMFD_ENV, arg_fd_entry, 1);
+	/*
+	 * This helps to identify the FD hold by parent process.
+	 * In auto-unmount case, parent process can close this FD explicitly to do unmount.
+	 * The FD[1] can be got via getenv(FUSE_COMMFD2_ENV).
+	 * One potential use case is to satisfy FD-Leak checks.
+	 */
+	snprintf(arg_fd_entry, sizeof(arg_fd_entry), "%i", fds[1]);
+	setenv(FUSE_COMMFD2_ENV, arg_fd_entry, 1);
 
 	char const *const argv[] = {
 		FUSERMOUNT_PROG,
@@ -426,6 +440,14 @@ static int fuse_mount_fusermount(const char *mountpoint, struct mount_opts *mo,
 	char arg_fd_entry[30];
 	snprintf(arg_fd_entry, sizeof(arg_fd_entry), "%i", fds[0]);
 	setenv(FUSE_COMMFD_ENV, arg_fd_entry, 1);
+	/*
+	 * This helps to identify the FD hold by parent process.
+	 * In auto-unmount case, parent process can close this FD explicitly to do unmount.
+	 * The FD[1] can be got via getenv(FUSE_COMMFD2_ENV).
+	 * One potential use case is to satisfy FD-Leak checks.
+	 */
+	snprintf(arg_fd_entry, sizeof(arg_fd_entry), "%i", fds[1]);
+	setenv(FUSE_COMMFD2_ENV, arg_fd_entry, 1);
 
 	char const *const argv[] = {
 		FUSERMOUNT_PROG,
